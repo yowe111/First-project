@@ -1,0 +1,54 @@
+# docker-compose описывает набор контейнеров (сервисов), которые
+# запускаются вместе одной командой `docker compose up`.
+services:
+  # ── Сервис с нашим приложением на FastAPI ────────────────────────────
+  app:
+    build:
+      context: ./backend       # собираем образ из папки бэкенда, а не из корня:
+                               # фронтенд и датасеты внутрь контейнера не нужны
+      dockerfile: app.dockerfile
+    env_file:
+      - .env                   # .env лежит в корне: он общий для всех сервисов
+    depends_on:
+      postgres:
+        condition: service_healthy   # ждём, пока база данных будет готова
+    ports:
+      - "8000:8000"            # проброс порта: localhost:8000 -> контейнер:8000
+    volumes:
+      - ./backend:/app         # монтируем код внутрь контейнера (для авто-перезагрузки)
+    networks:
+      - network
+    # Сначала Alembic создаёт/обновляет таблицы, потом стартует сервер.
+    # --reload: сервер перезапускается при изменении кода.
+    command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  # ── Сервис с базой данных PostgreSQL ─────────────────────────────────
+  postgres:
+    image: postgres:15         # готовый образ PostgreSQL версии 15
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${DB_NAME}
+      - TZ=Europe/Moscow
+    ports:
+      - "${POSTGRES_PORT}:5432"  # проброс порта БД на хост-машину
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # данные БД сохраняются между перезапусками
+    networks:
+      - network
+    # Healthcheck: docker сам проверяет, готова ли база принимать подключения.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+# Общая сеть, чтобы контейнеры видели друг друга по имени (app <-> postgres).
+networks:
+  network:
+    driver: bridge
+
+# Именованный том для хранения данных PostgreSQL на диске.
+volumes:
+  postgres_data:
+    driver: local
